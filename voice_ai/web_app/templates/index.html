@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Agent Vocal AfricaSys</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin: 5px; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button.danger { background: #dc3545; }
+        button.success { background: #28a745; }
+        #status { margin: 20px 0; padding: 10px; border-radius: 5px; font-weight: bold; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .connecting { background: #fff3cd; color: #856404; }
+        #logs { margin-top: 20px; padding: 10px; background: #f8f9fa; border-radius: 5px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .audio-level { width: 100%; height: 20px; background: #e9ecef; border-radius: 10px; margin: 10px 0; }
+        .audio-level-bar { height: 100%; background: #28a745; border-radius: 10px; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Agent Vocal - Information PrEP</h1>
+        
+        <div id="status" class="disconnected">🔴 Déconnecté</div>
+        
+        <div>
+            <button id="connectBtn" onclick="connect()">🔌 Se connecter</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>🔌 Se déconnecter</button>
+            <button id="startBtn" onclick="startConversation()" disabled>🎤 Démarrer conversation</button>
+            <button id="stopBtn" onclick="stopConversation()" disabled class="danger">⏹️ Arrêter</button>
+        </div>
+        
+        <div class="audio-level">
+            <div id="audioLevelBar" class="audio-level-bar" style="width: 0%"></div>
+        </div>
+        <div id="audioLevelText">Niveau audio: 0%</div>
+        
+        <div style="margin-top: 30px;">
+            <h3>Instructions :</h3>
+            <ol>
+                <li>Cliquez sur "Se connecter"</li>
+                <li>Attendez la connexion (status devient vert)</li>
+                <li>Cliquez sur "Démarrer conversation"</li>
+                <li>Parlez ! L'agent vous répondra</li>
+                <li>Vérifiez les logs pour voir ce qui se passe</li>
+            </ol>
+        </div>
+        
+        <div id="logs">
+            📋 Logs en temps réel...
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.0.0/dist/livekit-client.umd.min.js"></script>
+    <script>
+        let room;
+        let audioTrack;
+        let audioContext;
+        let analyser;
+        let microphoneStream;
+        let isRecording = false;
+        
+        function addLog(message) {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logs.innerHTML += `<br>👉 ${timestamp} - ${message}`;
+            logs.scrollTop = logs.scrollHeight;
+        }
+        
+        function updateStatus(text, className) {
+            const status = document.getElementById('status');
+            status.innerHTML = text;
+            status.className = className;
+        }
+        
+        function updateAudioLevel(level) {
+            const bar = document.getElementById('audioLevelBar');
+            const text = document.getElementById('audioLevelText');
+            bar.style.width = level + '%';
+            text.textContent = `Niveau audio: ${Math.round(level)}%`;
+        }
+
+        async function connect() {
+            try {
+                updateStatus('🟡 Connexion en cours...', 'connecting');
+                addLog('Tentative de connexion...');
+                
+                // Obtenir un token depuis le serveur
+                const response = await fetch('/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        roomName: 'test_room',
+                        userIdentity: 'web_user_' + Math.random().toString(36).substr(2, 9),
+                        userName: 'Web User'
+                    })
+                });
+                
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Erreur token');
+                }
+                
+                addLog('Token obtenu avec succès');
+                
+                // Créer et connecter la room LiveKit
+                room = new LivekitClient.Room();
+                
+                room.on('connected', () => {
+                    updateStatus('🟢 Connecté', 'connected');
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                    document.getElementById('startBtn').disabled = false;
+                    addLog('✅ Connecté à LiveKit !');
+                });
+                
+                room.on('disconnected', () => {
+                    updateStatus('🔴 Déconnecté', 'disconnected');
+                    addLog('🔴 Déconnecté de LiveKit');
+                    resetButtons();
+                });
+                
+                room.on('trackPublished', (publication) => {
+                    addLog(`📤 Track publié: ${publication.kind}`);
+                });
+                
+                room.on('trackSubscribed', (track, publication) => {
+                    addLog(`📥 Track reçu: ${track.kind}`);
+                    if (track.kind === 'audio') {
+                        // Attacher le track audio à la page
+                        const audioElement = document.createElement('audio');
+                        audioElement.autoplay = true;
+                        track.attach(audioElement);
+                        addLog('🔊 Audio attaché');
+                    }
+                });
+                
+                await room.connect(data.url, data.token);
+                addLog('Connexion LiveKit établie');
+                
+            } catch (error) {
+                updateStatus('🔴 Erreur: ' + error.message, 'disconnected');
+                addLog('❌ Erreur: ' + error.message);
+                console.error(error);
+            }
+        }
+
+        async function disconnect() {
+            if (room) {
+                room.disconnect();
+                addLog('Déconnexion manuelle');
+                updateStatus('🔴 Déconnecté', 'disconnected');
+                resetButtons();
+            }
+        }
+
+        function resetButtons() {
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        async function startConversation() {
+            try {
+                addLog('Demande d\'accès au micro...');
+                
+                // Demander l'accès au micro
+                microphoneStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+                
+                addLog('✅ Micro accessible');
+                
+                // Configurer l'analyse audio
+                audioContext = new AudioContext();
+                const source = audioContext.createMediaStreamSource(microphoneStream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                // Démarrer le monitoring audio
+                startAudioMonitoring();
+                
+                // Récupérer et publier la piste audio
+                const audioTrack = microphoneStream.getAudioTracks()[0];
+                addLog(`Track audio: ${audioTrack.label}`);
+                
+                await room.localParticipant.publishTrack(audioTrack);
+                addLog('✅ Micro publié sur LiveKit');
+                
+                updateStatus('🟢 En conversation... Parlez !', 'connected');
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                isRecording = true;
+                
+            } catch (error) {
+                console.error('Erreur micro:', error);
+                updateStatus('🔴 Erreur micro: ' + error.message, 'disconnected');
+                addLog('❌ Erreur micro: ' + error.message);
+            }
+        }
+
+        function stopConversation() {
+            if (microphoneStream) {
+                microphoneStream.getTracks().forEach(track => track.stop());
+                addLog('🎤 Micro arrêté');
+            }
+            
+            if (audioContext) {
+                audioContext.close();
+                addLog('🔊 Contexte audio fermé');
+            }
+            
+            isRecording = false;
+            updateAudioLevel(0);
+            updateStatus('🟢 Connecté (conversation arrêtée)', 'connected');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        function startAudioMonitoring() {
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            function updateLevel() {
+                if (!isRecording) return;
+                
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+                const normalizedLevel = Math.min(100, (average / 128) * 100);
+                
+                updateAudioLevel(normalizedLevel);
+                
+                // Détecter quand l'utilisateur parle
+                if (normalizedLevel > 10) {
+                    // On pourrait déclencher le traitement ici
+                }
+                
+                requestAnimationFrame(updateLevel);
+            }
+            
+            updateLevel();
+        }
+        
+        // Test micro au chargement
+        window.onload = async function() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                addLog('✅ Micro disponible (test initial)');
+                stream.getTracks().forEach(track => track.stop());
+            } catch (err) {
+                addLog('⚠️ Pas de micro ou permissions refusées: ' + err.message);
+            }
+        };
+    </script>
+</body>
+</html>
