@@ -1,0 +1,64 @@
+# Backend Flask pour Voice AI AfricaSys
+# Framework web
+Flask==2.3.3
+Flask-CORS==4.0.0
+
+# Traitement audio
+sounddevice==0.4.6
+numpy==1.24.3
+wavefile==1.3.1
+
+# Services IA
+deepgram-sdk==2.6.0
+elevenlabs==0.2.26
+openai==1.3.5
+gTTS==2.31.0
+
+# WAXAL Google - Langues africaines
+requests==2.31.0
+transformers>=4.21.0
+torch>=1.12.0
+datasets>=2.0.0
+librosa==0.10.1
+
+# Gestion asynchrone
+asyncio==3.4.3
+
+# Variables d'environnement
+python-dotenv==1.0.0
+
+# Requêtes HTTP
+requests==2.31.0
+
+# Gestion fichiers temporaires
+tempfile==0.2.1
+
+# UUID pour sessions
+uuid==1.30
+
+# Date/Time
+datetime==5.2
+
+# Monitoring et logging
+psutil==5.9.5
+
+# Sécurité
+cryptography==41.0.4
+
+# Validation JSON
+jsonschema==4.19.0
+
+# Compression audio
+pydub==0.25.1
+
+# Support WAV
+wavefile==1.3.1
+
+# Codecs audio
+librosa==0.10.1
+
+# Mathématiques avancées
+scipy==1.11.3
+
+# Traitement signal
+scikit-signal==0.1.2
