@@ -1,3 +1,4 @@
+import time
 import asyncio
 import os
 import requests
@@ -52,6 +53,7 @@ class WaxalClient:
         self.api_key = api_key
         self.stt_url = "https://api.waxal-speech.ai/stt"
         self.tts_url = "https://api.waxal-speech.ai/tts"
+        self.translation_url = "https://api.waxal-speech.ai/translate"  # API traduction WAXAL
         
     async def speech_to_text(self, audio_file_path, language_code):
         """STT avec WAXAL pour langues africaines"""
@@ -99,6 +101,35 @@ class WaxalClient:
         except Exception as e:
             print(f"❌ Erreur WAXAL TTS: {e}")
             return None
+    
+    async def translate_text(self, text, from_lang, to_lang):
+        """Traduction avec WAXAL API - meilleure qualité culturelle"""
+        try:
+            payload = {
+                "text": text,
+                "from_language": from_lang,
+                "to_language": to_lang
+            }
+            
+            response = requests.post(
+                self.translation_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                translated_text = result.get("translated_text", "")
+                print(f"✅ WAXAL Traduction {from_lang}→{to_lang}: '{text}' → '{translated_text}'")
+                return translated_text
+            else:
+                print(f"❌ Erreur WAXAL Traduction: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Erreur WAXAL Traduction: {e}")
+            return None
 
 class VoiceAgent:
     def __init__(self, current_language='fr'):
@@ -108,6 +139,12 @@ class VoiceAgent:
         self.current_language = current_language  # Langue actuelle
         self.is_recording = False
         self.audio_buffer = []
+        
+        # 🛡️ Circuit Breaker niveau production
+        self.groq_failures = 0
+        self.groq_last_failure = 0
+        self.groq_circuit_open = False
+        self.groq_circuit_timeout = 60  # 60 secondes
         
         print(f"🌍 VoiceAgent initialisé avec langue: {current_language}")
         print(f"📝 Langues disponibles: {list(WAXAL_LANGUAGES.keys())}")
@@ -226,76 +263,22 @@ class VoiceAgent:
                     await asyncio.sleep(0.5)  # Pause entre tentatives
         return None
     
-    async def _translate_with_retry(self, text, from_lang, to_lang, max_retries=2):
-        """Traduction avec retry automatique"""
+    async def _translate_with_retry(self, text, from_lang, to_lang, max_retries=3):
+        """Traduction avec WAXAL API uniquement - pas de fallback incorrect"""
         for attempt in range(max_retries):
             try:
-                # Utiliser un service de traduction simple
-                result = await self._simple_translate(text, from_lang, to_lang)
-                if result:
-                    return result
+                # Utiliser WAXAL Translation API uniquement
+                result = await self.waxal_client.translate_text(text, from_lang, to_lang)
+                if result and result.strip():
+                    return result.strip()
             except Exception as e:
-                print(f"⚠️ Traduction tentative {attempt + 1}/{max_retries}: {e}")
+                print(f"⚠️ WAXAL Traduction tentative {attempt + 1}/{max_retries}: {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(0.3)
-        return None
-    
-    async def _simple_translate(self, text, from_lang, to_lang):
-        """Traduction simple avec mapping"""
-        # Dictionnaire de traductions de base
-        translations = {
-            'bm': {'fr': {
-                'n ba': 'bonjour', 'i ni cɛ': 'ça va', 'n bɛ to': 'je vais bien',
-                'i ni ba': 'au revoir', 'i ni ɲɛ': 'merci', 'wè to': 'et toi',
-                'n bɛ fɛ': 'ça va bien', 'n bɛ tɛmɛ': 'j\'ai faim', 'n bɛ min': 'j\'ai soif',
-                'n bɛ sɔrɔ': 'je suis content', 'i ka kènè': 'comment vas-tu', 'n bɛ': 'je suis',
-                'i bɛ': 'tu es', 'a bɛ': 'il/elle est', 'an bɛ': 'nous sommes',
-                'aw bɛ': 'vous êtes', 'i bɛ': 'ils/elles sont'
-            }},
-            'fr': {'bm': {
-                'bonjour': 'n ba', 'ça va': 'i ni cɛ', 'je vais bien': 'n bɛ to',
-                'au revoir': 'i ni ba', 'merci': 'i ni ɲɛ', 'et toi': 'wè to',
-                'ça va bien': 'n bɛ fɛ', 'j\'ai faim': 'n bɛ tɛmɛ', 'j\'ai soif': 'n bɛ min',
-                'je suis content': 'n bɛ sɔrɔ', 'comment vas-tu': 'i ka kènè', 'je suis': 'n bɛ',
-                'tu es': 'i bɛ', 'il est': 'a bɛ', 'elle est': 'a bɛ', 'nous sommes': 'an bɛ',
-                'vous êtes': 'aw bɛ', 'ils sont': 'i bɛ', 'elles sont': 'i bɛ',
-                'salut': 'n ba', 'comment': 'comment', 'puis-je': 'ni bɛ se ka',
-                'vous aider': 'ka i fo', 'bienvenue': 'n bɛna', 's\'il vous plaît': 'a ɲɛ',
-                'excusez-moi': 'i ka bɔn', 'désolé': 'n bɛ wèrè', 'oui': 'ayiwa', 'non': 'non'
-            }},
-            'wo': {'fr': {
-                'salaam aleikum': 'bonjour', 'na nga def': 'ça va', 'ma ngi fi': 'je vais bien',
-                'jerejef': 'merci', 'ci nga def': 'et toi'
-            }},
-            'fr': {'wo': {
-                'bonjour': 'salaam aleikum', 'ça va': 'na nga def', 'je vais bien': 'ma ngi fi',
-                'merci': 'jerejef', 'et toi': 'ci nga def'
-            }},
-            'ha': {'fr': {
-                'sannu': 'bonjour', 'yaya': 'ça va', 'lafiya': 'je vais bien',
-                'nagode': 'merci', 'kana lafiya': 'et toi'
-            }},
-            'fr': {'ha': {
-                'bonjour': 'sannu', 'ça va': 'yaya', 'je vais bien': 'lafiya',
-                'merci': 'nagode', 'et toi': 'kana lafiya'
-            }},
-        }
+                    await asyncio.sleep(0.5)  # Pause plus longue entre tentatives
         
-        text_lower = text.lower().strip()
-        
-        # Chercher traduction exacte (pas seulement "contains")
-        if from_lang in translations and to_lang in translations[from_lang]:
-            # D'abord chercher une correspondance exacte
-            if text_lower in translations[from_lang][to_lang]:
-                return translations[from_lang][to_lang][text_lower]
-            
-            # Ensuite chercher si le texte contient une phrase à traduire
-            for original, translated in translations[from_lang][to_lang].items():
-                if original in text_lower:
-                    return text_lower.replace(original, translated)
-        
-        # Retourner le texte original si pas de traduction
-        return text
+        # Si WAXAL échoue complètement, retourner le texte original (pas de traduction incorrecte)
+        print("❌ WAXAL Traduction échoué - Conservation texte original")
+        return text  # Pas de traduction plutôt que traduction incorrecte
     
     async def _deepgram_stt(self, audio_file_path, language):
         """STT avec Deepgram (fallback pour français) - VERSION CORRIGÉE"""
@@ -329,19 +312,27 @@ class VoiceAgent:
             return None
     
     async def text_to_speech(self, text, language='fr'):
-        """TTS multilingue avec OpenAI pour meilleur accent africain"""
+        """TTS multilingue avec WAXAL pour accents africains authentiques"""
         try:
             if self.is_african_language(language):
-                print(f"🗣️ OpenAI TTS pour langue africaine: {language}")
-                # Utiliser OpenAI TTS pour meilleur accent
+                print(f"🗣️ WAXAL TTS pour accent {language} authentique: {language}")
+                # 1. WAXAL TTS - meilleur accent africain authentique
+                waxal_audio = await self.waxal_client.text_to_speech(text, language)
+                if waxal_audio:
+                    print(f"✅ WAXAL TTS généré: {len(waxal_audio)} bytes")
+                    return waxal_audio
+                else:
+                    print(f"⚠️ WAXAL TTS échoué - Fallback OpenAI")
+                
+                # 2. Fallback OpenAI TTS
                 return await self._openai_tts(text, language)
             else:
-                print(f"🗣️ gTTS pour langue: {language}")
-                # Utiliser gTTS pour le français
-                return await self._gtts_tts(text, language)
+                print(f"🗣️ ElevenLabs TTS pour français: {language}")
+                # Utiliser ElevenLabs pour le français (meilleur que gTTS)
+                return await self._elevenlabs_tts(text, language)
         except Exception as e:
             print(f"❌ Erreur TTS: {e}")
-            # Fallback vers gTTS en cas d'erreur
+            # Fallback vers gTTS en dernier recours
             return await self._gtts_tts(text, language)
     
     async def _openai_tts(self, text, language):
@@ -596,59 +587,360 @@ class VoiceAgent:
         except Exception as e:
             print(f"❌ Erreur lecture: {e}")
     
-    def get_llm_response(self, text):
-        """LLM multilingue qui comprend et répond dans la langue du texte"""
-        try:
-            import requests
-            
-            # Détecter la langue du texte
-            if self.is_african_language(self.current_language):
-                # Si langue africaine, demander réponse dans cette langue
-                context = f"""Tu es un assistant IA spécialisé dans les langues africaines. 
+    async def get_llm_response(self, text):
+        """LLM multilingue avec timeout global et résilience niveau production"""
+        import time
+        
+        max_retries = 3
+        retry_delay = 1.0
+        TOTAL_TIMEOUT = 10.0  # ⚡ Timeout global MAX 10 secondes
+        start_time = time.time()
+        
+        for attempt in range(max_retries):
+            try:
+                # ⚠️ Vérifier timeout global
+                if time.time() - start_time > TOTAL_TIMEOUT:
+                    print(f"⏰ Timeout global atteint ({TOTAL_TIMEOUT}s) - Fast fallback")
+                    return self._get_fast_fallback(text)
+                
+                # 🛡️ Circuit breaker check
+                if self._check_groq_circuit_breaker():
+                    print("⚡ Circuit breaker Groq ouvert - Skip vers fallback rapide")
+                    return await self._llm_fallback_fast(text, remaining_time=max(3.0, 10.0 - (time.time() - start_time)))
+                
+                print(f"🤖 Tentative LLM {attempt + 1}/{max_retries}")
+                
+                # Détecter la langue du texte
+                if self.is_african_language(self.current_language):
+                    context = f"""Tu es un assistant IA spécialisé dans les langues africaines. 
 L'utilisateur te parle en {self.current_language} (langue africaine).
 Réponds DIRECTEMENT en {self.current_language}, PAS en français.
 Utilise les expressions et la culture {self.current_language}.
 Sois naturel et authentique."""
+                else:
+                    context = f"""Tu es un assistant IA multilingue spécialisé dans les langues africaines."""
+                
+                # Timeout adaptatif selon le temps restant
+                remaining_time = TOTAL_TIMEOUT - (time.time() - start_time)
+                timeout = min(8.0, max(2.0, remaining_time))  # 2-8s max
+                
+                response = requests.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    headers={
+                        'Authorization': f'Bearer {os.getenv("GROQ_API_KEY")}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': 'llama-3.1-8b-instant',
+                        'messages': [
+                            {"role": "system", "content": context},
+                            {"role": "user", "content": text}
+                        ],
+                        'max_tokens': 300,  # Réduit pour vitesse
+                        'temperature': 0.7,
+                        'top_p': 0.9,
+                        'stream': False
+                    },
+                    timeout=timeout  # Timeout adaptatif
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    response_text = result['choices'][0]['message']['content']
+                    
+                    cleaned_response = self._optimize_response(response_text)
+                    elapsed = time.time() - start_time
+                    print(f"✅ Réponse LLM en {elapsed:.2f}s: '{cleaned_response}'")
+                    
+                    # 🛡️ Enregistrer succès
+                    self._record_groq_success()
+                    return cleaned_response
+                else:
+                    print(f"❌ Erreur Groq HTTP: {response.status_code}")
+                    # 🛡️ Enregistrer échec
+                    self._record_groq_failure()
+                    
+                    if time.time() - start_time > TOTAL_TIMEOUT:
+                        break
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(min(retry_delay, 2.0))  # Max 2s
+                        retry_delay = min(retry_delay * 1.5, 3.0)  # Backoff limité
+                    continue
+                    
+            except requests.exceptions.Timeout:
+                print(f"⏰ Timeout LLM (tentative {attempt + 1})")
+                # 🛡️ Enregistrer échec
+                self._record_groq_failure()
+                
+                if time.time() - start_time > TOTAL_TIMEOUT:
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(retry_delay, 1.5))
+                    retry_delay = min(retry_delay * 1.5, 2.5)
+                continue
+                    
+            except Exception as e:
+                print(f"❌ Erreur LLM (tentative {attempt + 1}): {e}")
+                # 🛡️ Enregistrer échec
+                self._record_groq_failure()
+                
+                if time.time() - start_time > TOTAL_TIMEOUT:
+                    break
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(retry_delay, 1.0))
+                    retry_delay = min(retry_delay * 1.5, 2.0)
+                continue
+        
+        # Fallback rapide si timeout global dépassé
+        elapsed = time.time() - start_time
+        print(f"🚨 Échec LLM après {elapsed:.2f}s - Fast fallback")
+        return await self._llm_fallback_fast(text, remaining_time=max(3.0, 10.0 - elapsed))
+    
+    def _check_groq_circuit_breaker(self):
+        """Vérifie si le circuit breaker Groq est ouvert"""
+        import time
+        
+        # Si circuit ouvert, vérifier si on peut le refermer
+        if self.groq_circuit_open:
+            if time.time() - self.groq_last_failure > self.groq_circuit_timeout:
+                print("🔄 Circuit breaker Groq refermé")
+                self.groq_circuit_open = False
+                self.groq_failures = 0
+                return False
             else:
-                # Si français, répondre en français
-                context = f"""Tu es un assistant IA multilingue spécialisé dans les langues africaines."""
+                return True  # Circuit toujours ouvert
+        
+        # Si trop d'échecs, ouvrir le circuit
+        if self.groq_failures >= 5:
+            print(f"🚨 Circuit breaker Groq ouvert ({self.groq_failures} échecs)")
+            self.groq_circuit_open = True
+            self.groq_last_failure = time.time()
+            return True
+        
+        return False
+    
+    def _record_groq_success(self):
+        """Enregistrer un succès Groq"""
+        if self.groq_failures > 0:
+            self.groq_failures = max(0, self.groq_failures - 1)
+            print(f"✅ Succès Groq - Failures réduits à {self.groq_failures}")
+    
+    def _record_groq_failure(self):
+        """Enregistrer un échec Groq"""
+        self.groq_failures += 1
+        print(f"❌ Échec Groq enregistré - Total failures: {self.groq_failures}")
+    
+    def _get_fast_fallback(self, text):
+        """Fallback ultra-rapide (<100ms) pour timeout critique"""
+        text_lower = text.lower().strip()
+        
+        # Réponses ultra-rapides basées sur les premiers mots
+        if any(word in text_lower[:20] for word in ["bonjour", "salut", "n ba", "sannu"]):
+            return f"Bonjour! Je suis votre assistant IA. Comment puis-je vous aider en {self.current_language}?"
+        
+        elif any(word in text_lower[:20] for word in ["merci", "i ni", "nagode", "jerejef"]):
+            return "Avec plaisir! Je suis là pour vous aider. Autre chose?"
+        
+        elif any(word in text_lower[:20] for word in ["aide", "help", "problème"]):
+            return f"Je comprends. Décrivez-moi votre besoin en {self.current_language} ou français."
+        
+        else:
+            return f"Je suis votre assistant vocal multilingue. En quoi puis-je vous aider?"
+    
+    async def _llm_fallback_fast(self, text, remaining_time=3.0):
+        """Fallback LLM optimisé pour vitesse"""
+        import time
+        start_time = time.time()
+        
+        # 🛡️ Vérifier circuit breaker
+        if self._check_groq_circuit_breaker():
+            print("⚡ Circuit breaker Groq ouvert - Skip direct vers OpenAI")
+        else:
+            # Tentative OpenAI rapide
+            try:
+                print(f"⚡ Fast fallback OpenAI ({remaining_time:.1f}s max)")
+                openai_response = await self._openai_llm_fallback_fast(text, timeout=min(2.5, remaining_time))
+                if openai_response:
+                    self._record_groq_failure()  # Quand même compter l'échec Groq
+                    return openai_response
+            except Exception as e:
+                print(f"❌ Fast fallback OpenAI échoué: {e}")
+        
+        # Fallback ultra-rapide
+        elapsed = time.time() - start_time
+        print(f"⚡ Fast fallback rules après {elapsed:.2f}s")
+        return self._get_fast_fallback(text)
+    
+    async def _openai_llm_fallback_fast(self, text, timeout=2.5):
+        """Fallback OpenAI optimisé pour vitesse"""
+        try:
+            from openai import OpenAI
             
-            # Utiliser Groq API avec paramètres optimisés
-            response = requests.post(
-                'https://api.groq.com/openai/v1/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {os.getenv("GROQ_API_KEY")}',
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'model': 'llama-3.1-8b-instant',
-                    'messages': [
-                        {"role": "system", "content": context},
-                        {"role": "user", "content": text}
-                    ],
-                    'max_tokens': 500,
-                    'temperature': 0.7,
-                    'top_p': 0.9,
-                    'stream': False
-                },
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            # Contexte ultra-simple
+            if self.is_african_language(self.current_language):
+                context = f"Réponds brièvement en {self.current_language}. Maximum 2 phrases."
+            else:
+                context = "Réponds brièvement en français. Maximum 2 phrases."
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": context},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=100,  # Ultra-court pour vitesse
+                temperature=0.7,
+                timeout=timeout
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            print(f"❌ Fast OpenAI error: {e}")
+            return None
+    
+    async def _llm_fallback_chain(self, text):
+        """Cascade de fallback LLM niveau entreprise"""
+        
+        # 1. Fallback OpenAI (si Groq échoue)
+        try:
+            print("🔄 Fallback LLM 1: OpenAI")
+            openai_response = await self._openai_llm_fallback(text)
+            if openai_response:
+                return openai_response
+        except Exception as e:
+            print(f"❌ Fallback OpenAI échoué: {e}")
+        
+        # 2. Fallback Hugging Face (si OpenAI échoue)
+        try:
+            print("🔄 Fallback LLM 2: Hugging Face")
+            hf_response = await self._huggingface_fallback(text)
+            if hf_response:
+                return hf_response
+        except Exception as e:
+            print(f"❌ Fallback Hugging Face échoué: {e}")
+        
+        # 3. Dernier recours: règles intelligentes
+        print("🔄 Fallback 3: Règles intelligentes")
+        return self._get_intelligent_fallback(text)
+    
+    async def _openai_llm_fallback(self, text):
+        """Fallback OpenAI GPT"""
+        try:
+            from openai import OpenAI
+            
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            # Contexte adapté
+            if self.is_african_language(self.current_language):
+                context = f"Réponds en {self.current_language} (langue africaine) de manière simple et utile."
+            else:
+                context = "Réponds en français de manière simple et utile."
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": context},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=300,
+                temperature=0.7,
                 timeout=10
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                response_text = result['choices'][0]['message']['content']
-                
-                # Nettoyage et optimisation de la réponse
-                cleaned_response = self._optimize_response(response_text)
-                print(f"✅ Réponse LLM en {self.current_language}: '{cleaned_response}'")
-                return cleaned_response
-            else:
-                print(f"❌ Erreur Groq: {response.status_code}")
-                raise Exception("Groq API failed")
+            return response.choices[0].message.content.strip()
             
         except Exception as e:
-            print(f"❌ Erreur LLM: {e}")
-            raise Exception(f"LLM failed: {str(e)}")
+            print(f"❌ OpenAI fallback error: {e}")
+            return None
+    
+    async def _huggingface_fallback(self, text):
+        """Fallback Hugging Face (local/plus rapide)"""
+        try:
+            import requests
+            
+            # Modèle léger et rapide
+            API_URL = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
+            headers = {"Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY', '')}"}
+            
+            payload = {"inputs": text}
+            
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=8)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result[0].get("generated_text", text)
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Hugging Face fallback error: {e}")
+            return None
+    
+    def _get_intelligent_fallback(self, text):
+        """Fallback intelligent avec gestion d'erreurs"""
+        text_lower = text.lower().strip()
+        
+        try:
+            # Analyse du type de demande
+            if any(word in text_lower for word in ["bonjour", "salut", "hello", "n ba", "sannu"]):
+                return self._format_fallback_response(
+                    f"Je suis votre assistant vocal pour les langues africaines. ",
+                    f"Je peux vous aider en {self.current_language} ou en français. ",
+                    "Comment puis-je vous assister aujourd'hui ?"
+                )
+            
+            elif any(word in text_lower for word in ["merci", "thank", "i ni ɲɛ", "nagode", "jerejef"]):
+                return self._format_fallback_response(
+                    "Avec plaisir ! ",
+                    f"C'est un honneur de converser avec vous en {self.current_language}. ",
+                    "Y a-t-il autre chose dont vous avez besoin ?"
+                )
+            
+            elif any(word in text_lower for word in ["aide", "aide", "help", "problème", "erreur"]):
+                return self._format_fallback_response(
+                    "Je comprends que vous avez besoin d'aide. ",
+                    f"Je suis là pour vous assister en {self.current_language}. ",
+                    "Pouvez-vous me décrire plus précisément votre besoin ?"
+                )
+            
+            elif any(word in text_lower for word in ["qui es", "comment", "ton nom", "identité"]):
+                return self._format_fallback_response(
+                    f"Je suis votre assistant IA spécialisé dans les langues africaines. ",
+                    f"Je fonctionne en {self.current_language} et en français. ",
+                    "Mon rôle est de vous aider avec vos questions quotidiennes."
+                )
+            
+            else:
+                # Fallback générique mais informatif
+                return self._format_fallback_response(
+                    f"Je suis votre assistant vocal multilingue. ",
+                    f"Je traite actuellement le {self.current_language}. ",
+                    "Je suis là pour vous aider. Pouvez-vous reformuler votre question ?"
+                )
+                
+        except Exception as e:
+            print(f"❌ Erreur fallback intelligent: {e}")
+            return "Désolé, je rencontre des difficultés techniques. Veuillez réessayer dans un instant."
+    
+    def _format_fallback_response(self, prefix, context, suffix):
+        """Formate une réponse fallback avec contexte culturel"""
+        if self.is_african_language(self.current_language):
+            # Ajouter une touche culturelle selon la langue
+            cultural_touches = {
+                'bm': " I ni bɛ !",  # Bambara
+                'wo': " Maa ngi fi !",  # Wolof  
+                'ha': " Lafiya !",  # Haoussa
+                'yo': " Pẹlẹ o !",  # Yoruba
+                'sw': " Nzuri sana !",  # Swahili
+            }
+            touch = cultural_touches.get(self.current_language, "")
+            return f"{prefix}{context}{suffix}{touch}"
+        else:
+            return f"{prefix}{context}{suffix}"
     
     def _get_optimized_context(self, text):
         """Contexte optimisé selon la langue détectée"""
@@ -683,111 +975,6 @@ Sois concis mais complet."""
             cleaned = cleaned.replace(old, new)
         
         return cleaned
-    
-    def _get_fallback_response(self, text):
-        """Fallback intelligent avec réponses contextuelles variées"""
-        
-        import random
-        
-        # Réponses contextuelles basées sur le texte utilisateur
-        text_lower = text.lower()
-        
-        # Salutations - réponses variées
-        if any(word in text_lower for word in ["bonjour", "salut", "hello", "hi"]):
-            responses = [
-                "Bonjour ! Comment puis-je vous aider aujourd'hui ?",
-                "Salut ! Ravie de vous entendre ! Comment ça va ?",
-                "Bonjour ! Quelle belle journée ! En quoi puis-je vous assister ?",
-                "Hello ! Comment se passe votre journée ?"
-            ]
-            return random.choice(responses)
-        
-        # Questions sur l'identité - réponses variées
-        if any(word in text_lower for word in ["qui es-tu", "comment tu t'appelles", "ton nom"]):
-            responses = [
-                "Je suis votre assistant vocal intelligent. Je suis là pour vous aider avec vos questions et tâches quotidiennes.",
-                "Je suis une IA conversationnelle conçue pour vous assister. Comment puis-je vous être utile ?",
-                "Je suis votre compagnon vocal personnel. N'hésitez pas à me poser des questions !"
-            ]
-            return random.choice(responses)
-        
-        # Comment ça va - réponses variées
-        if any(word in text_lower for word in ["comment ça va", "ça va", "tu vas bien"]):
-            responses = [
-                "Je vais très bien, merci ! Je suis prêt à vous aider. Et vous ?",
-                "Tout va parfaitement ! Je suis là pour vous. Comment allez-vous ?",
-                "Je suis en pleine forme ! Merci de demander. Et vous, comment allez-vous ?"
-            ]
-            return random.choice(responses)
-        
-        # Questions éducatives - réponses intelligentes
-        if any(word in text_lower for word in ["qu'est-ce que", "c'est quoi", "défini"]):
-            if "banque" in text_lower:
-                responses = [
-                    "Une banque est une institution financière qui gère l'argent, propose des crédits et protège vos économies. Elle facilite les transactions et investissements.",
-                    "La banque est un établissement qui conserve votre argent en sécurité, offre des prêts et des services financiers adaptés à vos besoins.",
-                    "Une banque sert d'intermédiaire financier : elle garde vos fonds, accorde des prêts et simplifie vos transactions quotidiennes."
-                ]
-            elif "paludisme" in text_lower:
-                responses = [
-                    "Le paludisme est une maladie infectieuse transmise par les moustiques. Elle provoque de la fièvre et peut être grave sans traitement rapide.",
-                    "Le paludisme est causé par un parasite transmis par la piqûre de moustique anophèle. Il est prévenable et traitable avec des médicaments adaptés.",
-                    "Le paludisme est une maladie tropicale grave qui se manifeste par des fièvres cycliques. La prévention inclut les moustiquaires et médicaments."
-                ]
-            else:
-                responses = [
-                    "C'est une excellente question ! Permettez-moi de vous expliquer cela en détail.",
-                    "Je comprends votre curiosité. C'est un sujet intéressant qui mérite quelques précisions.",
-                    "Bonne question ! Voici ce que vous devez savoir à ce sujet..."
-                ]
-            return random.choice(responses)
-        
-        # Remerciements - réponses variées
-        if any(word in text_lower for word in ["merci", "thank"]):
-            responses = [
-                "De rien ! C'est toujours un plaisir de vous aider. Y a-t-il autre chose ?",
-                "Avec plaisir ! N'hésitez pas si vous avez besoin d'autre chose.",
-                "Je vous en prie ! C'est ma mission de vous assister. Comment puis-je encore vous aider ?"
-            ]
-            return random.choice(responses)
-        
-        # Au revoir - réponses variées
-        if any(word in text_lower for word in ["au revoir", "bye", "à plus"]):
-            responses = [
-                "Au revoir ! Passez une excellente journée et n'hésitez pas à revenir si vous avez besoin d'aide.",
-                "À bientôt ! Prenez soin de vous et revenez quand vous voulez !",
-                "Au plaisir de vous revoir ! Bonne continuation et excellente journée !"
-            ]
-            return random.choice(responses)
-        
-        # Réponse générique intelligente et variée
-        if len(text.split()) > 3:  # Question complexe
-            responses = [
-                "C'est une question très intéressante ! Laissez-moi réfléchir à la meilleure façon de vous répondre...",
-                "Je comprends votre interrogation. C'est un sujet qui mérite qu'on s'y attarde.",
-                "Excellente question ! Voici ma perspective sur ce sujet...",
-                "Votre question est pertinente ! Permettez-moi de vous donner une réponse complète."
-            ]
-        else:
-            responses = [
-                "Je suis là pour vous aider ! Dites-moi ce dont vous avez besoin.",
-                "Comment puis-je vous être utile aujourd'hui ?",
-                "Je suis votre assistant personnel. En quoi puis-je vous assister ?",
-                "N'hésitez pas à me poser vos questions, je suis là pour ça !"
-            ]
-        
-        return random.choice(responses)
-    
-    def _get_default_response(self, text):
-        """Dernier recours si tout échoue"""
-        text_lower = text.lower()
-        
-        if any(word in text_lower for word in ["bonjour", "salut"]):
-            return "Bonjour ! Comment puis-je vous aider ?"
-        elif any(word in text_lower for word in ["merci"]):
-            return "De rien ! Je suis là pour aider."
-        else:
-            return "Je suis votre assistant vocal. Comment puis-je vous aider aujourd'hui ?"
     
     async def process_conversation(self):
         """Pipeline complet de conversation"""
