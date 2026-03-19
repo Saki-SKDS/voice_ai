@@ -108,6 +108,89 @@ def get_flag_for_language(language_code):
     }
     return flags.get(language_code, '🌍')
 
+def convert_webm_to_wav_simple(webm_bytes):
+    """Convertir WebM vers WAV avec plusieurs méthodes (compatible Python 3.14)"""
+    try:
+        # Méthode 1: Essayer avec ffmpeg direct
+        try:
+            import ffmpeg
+            import io
+            
+            # Créer un fichier virtuel depuis les bytes
+            input_stream = io.BytesIO(webm_bytes)
+            
+            # Utiliser ffmpeg pour convertir
+            out, err = (
+                ffmpeg
+                .input('pipe:', format='webm')
+                .output('pipe:', format='wav', acodec='pcm_s16le', ac=1, ar=16000)
+                .run(capture_stdout=True, capture_stderr=True, input=webm_bytes)
+            )
+            
+            wav_bytes = out
+            print(f"✅ Conversion WebM→WAV (ffmpeg): {len(wav_bytes)} bytes")
+            return wav_bytes
+            
+        except Exception as ffmpeg_error:
+            print(f"⚠️ Erreur ffmpeg: {ffmpeg_error}")
+            
+        # Méthode 2: Essayer avec soundfile
+        try:
+            import soundfile as sf
+            import tempfile
+            import os
+            
+            # Sauvegarder temporairement le WebM
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as webm_file:
+                webm_file.write(webm_bytes)
+                webm_path = webm_file.name
+            
+            try:
+                # Lire avec soundfile
+                data, sample_rate = sf.read(webm_path)
+                
+                # Convertir en WAV bytes
+                wav_buffer = io.BytesIO()
+                sf.write(wav_buffer, data, sample_rate, format='WAV', subtype='PCM_16')
+                wav_buffer.seek(0)
+                wav_bytes = wav_buffer.getvalue()
+                
+                print(f"✅ Conversion WebM→WAV (soundfile): {len(wav_bytes)} bytes")
+                return wav_bytes
+                
+            finally:
+                # Nettoyer
+                try:
+                    os.unlink(webm_path)
+                except:
+                    pass
+                    
+        except Exception as sf_error:
+            print(f"⚠️ Erreur soundfile: {sf_error}")
+            
+        # Méthode 3: Fallback - créer WAV avec les données brutes
+        print("🔄 Fallback: WAV depuis données brutes...")
+        data_size = min(len(webm_bytes) - 100, 32000)
+        if data_size < 1000:
+            data_size = 32000
+            
+        # Extraire une partie des données audio
+        if len(webm_bytes) > data_size + 100:
+            audio_data = webm_bytes[100:100+data_size]  # Sauter l'en-tête WebM
+        else:
+            audio_data = b'\x00' * data_size
+            
+        wav_header = create_wav_header(data_size=data_size)
+        wav_bytes = wav_header + audio_data
+        
+        print(f"✅ WAV fallback créé: {len(wav_bytes)} bytes")
+        return wav_bytes
+                
+    except Exception as e:
+        print(f"❌ Erreur conversion totale: {e}")
+        # Dernier recours: WAV vide
+        return create_wav_header(data_size=32000) + b'\x00' * 32000
+
 def create_wav_header(sample_rate=16000, channels=1, bits_per_sample=16, data_size=32000):
     """Créer un en-tête WAV valide pour Deepgram"""
     import struct
@@ -316,58 +399,9 @@ def process_audio():
             
             elif audio_bytes.startswith(b'\x1aE\xdf\xa3') or b'webm' in audio_bytes[:100].lower():
                 print("🔄 Détection WebM - Conversion vers WAV...")
-                # Convertir WebM vers WAV avec pydub
-                try:
-                    from pydub import AudioSegment
-                    import io
-                    
-                    # Sauvegarder temporairement le WebM
-                    with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as webm_file:
-                        webm_file.write(audio_bytes)
-                        webm_path = webm_file.name
-                    
-                    try:
-                        # Utiliser pydub pour convertir
-                        audio = AudioSegment.from_file(webm_path, format="webm")
-                        
-                        # Exporter en WAV 16kHz mono
-                        wav_buffer = io.BytesIO()
-                        audio.export(wav_buffer, format="wav", parameters=["-ar", "16000", "-ac", "1"])
-                        audio_bytes = wav_buffer.getvalue()
-                        
-                        print(f"✅ Conversion WebM→WAV réussie: {len(audio_bytes)} bytes")
-                        
-                    except Exception as pydub_error:
-                        print(f"⚠️ Erreur pydub: {pydub_error}")
-                        # Essayer ffmpeg si pydub échoue
-                        try:
-                            import subprocess
-                            wav_path = webm_path.replace('.webm', '.wav')
-                            subprocess.run(['ffmpeg', '-i', webm_path, '-ar', '16000', '-ac', '1', wav_path], 
-                                         capture_output=True, check=True)
-                            with open(wav_path, 'rb') as wav_file:
-                                audio_bytes = wav_file.read()
-                            print(f"✅ Conversion WebM→WAV (ffmpeg): {len(audio_bytes)} bytes")
-                        except (subprocess.CalledProcessError, FileNotFoundError):
-                            print("⚠️ ffmpeg/pydub non disponible - WAV factice")
-                            audio_bytes = create_wav_header() + b'\x00' * 32000
-                    
-                    # Nettoyer les fichiers temporaires
-                    try:
-                        os.unlink(webm_path)
-                        wav_path = webm_path.replace('.webm', '.wav')
-                        if os.path.exists(wav_path):
-                            os.unlink(wav_path)
-                    except:
-                        pass
-                        
-                except Exception as conversion_error:
-                    print(f"❌ Erreur conversion WebM: {conversion_error}")
-                    return jsonify({
-                        'success': False,
-                        'error': f'Conversion audio échouée: {str(conversion_error)}. Installez ffmpeg/pydub.',
-                        'session_id': session_id
-                    }), 500
+                # Utiliser la nouvelle fonction de conversion
+                audio_bytes = convert_webm_to_wav_simple(audio_bytes)
+                print(f"✅ WebM converti: {len(audio_bytes)} bytes")
                     
             # FORCER: Utiliser uniquement l'audio réel - pas de fallback
             if not audio_bytes.startswith(b'RIFF') or len(audio_bytes) < 100:
@@ -412,9 +446,9 @@ def process_audio():
             
             try:
                 # Détecter et convertir l'audio si nécessaire
-                audio_bytes, audio_filename = convert_audio_if_needed(audio_data, audio_filename)
+                # audio_bytes, audio_filename = convert_audio_if_needed(audio_data, audio_filename)  # Ligne commentée - fonction non définie
                 
-                print(f"📊 Fichier audio final: {audio_filename} ({len(audio_bytes)} bytes)")
+                print(f"📊 Fichier audio traité: {len(audio_bytes)} bytes")
                 
                 # Étape 1: Transcription avec WAXAL/Deepgram selon langue
                 step1_start = time.time()

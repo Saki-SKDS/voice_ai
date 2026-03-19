@@ -478,29 +478,72 @@ class VoiceAgent:
         return audio_bytes
         
     def record_audio(self, duration=5, sample_rate=16000):
-        """Enregistre l'audio depuis le micro"""
+        """Enregistre l'audio depuis le micro avec diagnostic"""
         print(f"🎤 Enregistrement pour {duration} secondes...")
         
+        # Diagnostic micro
+        try:
+            print(f"🔧 Micro utilisé: {sd.default.device}")
+            print(f"🔧 Taux échantillonnage: {sample_rate} Hz")
+        except:
+            print("⚠️ Impossible de détecter le micro")
+        
+        # Enregistrement avec qualité améliorée et gain control
         self.audio_buffer = sd.rec(
             int(duration * sample_rate), 
             samplerate=sample_rate, 
             channels=1, 
-            dtype='int16'
+            dtype='int16',
+            blocking=True  # Bloquer jusqu'à fin enregistrement
         )
-        sd.wait()
+        
+        # Réduire gain si saturation
+        max_volume = np.max(np.abs(self.audio_buffer))
+        if max_volume > 10000:  # Seuil de saturation
+            # Réduire le volume
+            gain_factor = 8000 / max_volume
+            self.audio_buffer = (self.audio_buffer * gain_factor).astype(np.int16)
+            print(f"🔧 Gain réduit de: {gain_factor:.2f}")
+        
+        # Normaliser l'audio
+        if max_volume > 0:
+            normalized = self.audio_buffer / max_volume
+            self.audio_buffer = (normalized * 8000).astype(np.int16)  # Volume cible
+        
+        # Diagnostic qualité audio
+        max_volume = np.max(np.abs(self.audio_buffer))
+        print(f"🔊 Volume max: {max_volume:.3f}")
+        
+        if max_volume < 0.01:
+            print("⚠️ Volume trop bas - parle plus fort!")
+        elif max_volume > 0.95:
+            print("⚠️ Volume trop haut - parle moins fort!")
+        else:
+            print("✅ Volume correct")
         
         print("✅ Enregistrement terminé")
         return self.audio_buffer
     
     def audio_to_wav_bytes(self, audio_data, sample_rate=16000):
-        """Convertit les données audio en bytes WAV"""
+        """Convertit les données audio en bytes WAV avec réduction de bruit"""
         wav_buffer = io.BytesIO()
+        
+        # Réduction de bruit simple
+        audio_float = audio_data.astype(np.float32) / 32768.0
+        
+        # Filtre passe-bas simple pour réduire le bruit
+        from scipy import signal
+        b, a = signal.butter(4, 0.9, 'low')
+        audio_filtered = signal.filtfilt(b, a, audio_float)
+        
+        # Reconvertir en int16
+        audio_clean = (audio_filtered * 32767).astype(np.int16)
         
         with wave.open(wav_buffer, 'wb') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_data.tobytes())
+            wav_file.writeframes(audio_clean.tobytes())
         
         wav_buffer.seek(0)
         return wav_buffer.getvalue()
